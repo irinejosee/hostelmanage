@@ -28,7 +28,7 @@ window.HUB = {
 
   // Authentication
   login: (username, password) => {
-    // Admin Creds
+    // 1. Admin Creds
     if (username === 'admin' && password === 'admin') {
       window.HUB.isLoggedIn = true;
       window.HUB.userRole = 'admin';
@@ -38,22 +38,29 @@ window.HUB = {
       sessionStorage.setItem('hub_user', JSON.stringify(window.HUB.currentUser));
       window.HUB.ENGINE.log('AUTH_LOGIN', 'system', { user: 'admin', role: 'admin' });
       window.HUB.render();
+      return;
     }
-    // User/Resident Demo Creds
-    else if (username === 'user' && password === 'user') {
+
+    // 2. Dynamic Resident Login
+    // Check if username is 'user' (demo) or a valid resident email
+    let resident = null;
+    if (username === 'user' && password === 'user') {
+      resident = students.data[0]; // Take the first resident for the demo
+    } else {
+      resident = students.findOne({ email: username });
+    }
+
+    if (resident && (password === 'user' || password === 'pass' || password === resident.id.toString())) {
       window.HUB.isLoggedIn = true;
       window.HUB.userRole = 'user';
-      // Link to Alice for demo
-      const alice = students.findOne({ email: 'alice@example.com' });
-      window.HUB.currentUser = alice || { name: 'Resident User', id: 999 };
+      window.HUB.currentUser = resident;
       sessionStorage.setItem('hub_auth', 'true');
       sessionStorage.setItem('hub_role', 'user');
       sessionStorage.setItem('hub_user', JSON.stringify(window.HUB.currentUser));
-      window.HUB.ENGINE.log('AUTH_LOGIN', 'system', { user: 'resident', role: 'user' });
+      window.HUB.ENGINE.log('AUTH_LOGIN', 'system', { user: resident.name, role: 'user' });
       window.HUB.render();
-    }
-    else {
-      alert("Invalid credentials. \nTry admin / admin for full access \nOR user / user for resident view.");
+    } else {
+      alert("Invalid credentials. \n\nMASTER: admin / admin \nRESIDENT: Use your registered email \nDEMO: user / user");
     }
   },
 
@@ -334,13 +341,13 @@ function Layout(content) {
            <div class="role">${window.HUB.userRole.toUpperCase()}</div>
         </div>
       </div>
-      <div class="logout-container">
-        <button class="btn btn-secondary btn-logout" onclick="window.HUB.logout()">
+    </div>
+    <main class="main-content">
+      <div class="top-nav">
+        <button class="btn-signout-top" onclick="window.HUB.logout()">
           <span>🚪</span> Sign Out
         </button>
       </div>
-    </div>
-    <main class="main-content">
       ${content}
     </main>
     ${ModalContainer()}
