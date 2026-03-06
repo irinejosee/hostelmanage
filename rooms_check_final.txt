@@ -1,0 +1,2 @@
+﻿id	room_number	room_type	capacity	created_at
+4	301	Deluxe Suite	2	2026-03-06 21:36:45

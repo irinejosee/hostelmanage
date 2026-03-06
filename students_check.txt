@@ -1,0 +1,6 @@
+﻿id	name	email	room_id	registered_at
+1	Alice Johnson	alice@hostel.com	1	2026-03-06 19:14:51
+2	Bob Smith	bob@hostel.com	2	2026-03-06 19:14:51
+3	Sarah Connor	sarah@skynet.com	2	2026-03-06 19:20:47
+4	CoolHawk	pillownotfound@gmail.com	NULL	2026-03-06 20:55:20
+5	plop	catatoram@gmail.com	NULL	2026-03-06 21:25:20

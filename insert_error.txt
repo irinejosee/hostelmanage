@@ -1,0 +1,23 @@
+﻿mysql : mysql: [Warning] 
+Using a password on the 
+command line interface can be 
+insecure.
+At line:1 char:1
++ mysql -u root 
+-pmysqlmaggie@1234 -e "USE 
+hostelmanagedb; INSERT INTO  
+...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~
+    + CategoryInfo          : 
+    NotSpecified: (mysql: [W  
+  arning...an be insecure.:   
+ String) [], RemoteExcepti    
+on
+    + FullyQualifiedErrorId : 
+    NativeCommandError
+ 
+ERROR 3819 (HY000) at line 1: 
+Check constraint 
+'chk_room_type' is violated.

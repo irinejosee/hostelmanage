@@ -25,6 +25,44 @@ window.HUB = {
   selectedId: null,
   searchQuery: '',
   selectedDate: new Date().toISOString().split('T')[0],
+  apiUrl: 'http://localhost:5000/api',
+
+  // API Syncing (MySQL Connection)
+  SYNC: {
+    fetch: async (endpoint) => {
+      try {
+        const response = await fetch(`${window.HUB.apiUrl}/${endpoint}`);
+        return await response.json();
+      } catch (e) {
+        console.error(`API Fetch Error (${endpoint}):`, e);
+        return null;
+      }
+    },
+    push: async (endpoint, data) => {
+      try {
+        const response = await fetch(`${window.HUB.apiUrl}/${endpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        return await response.json();
+      } catch (e) {
+        console.error(`API Push Error (${endpoint}):`, e);
+        return null;
+      }
+    },
+    drop: async (endpoint, id) => {
+      try {
+        const response = await fetch(`${window.HUB.apiUrl}/${endpoint}/${id}`, {
+          method: 'DELETE'
+        });
+        return await response.json();
+      } catch (e) {
+        console.error(`API Drop Error (${endpoint}):`, e);
+        return null;
+      }
+    }
+  },
 
   // Authentication
   login: (username, password) => {
@@ -77,148 +115,255 @@ window.HUB = {
   // Core Operations (DML / Constraints / Triggers)
   ENGINE: {
     log: (action, table, details) => {
-      if (logs) logs.insert({ timestamp: new Date(), action, table, details });
+      if (logs) {
+        const entry = logs.insert({ timestamp: new Date(), action, table, details });
+        window.HUB.SYNC.push('logs', [entry]);
+      }
     },
 
-    addStudent: (name, email) => {
+    addStudent: async (name, email) => {
       if (students.findOne({ email })) throw new Error("A student with this email is already registered.");
-      const s = students.insert({ id: Date.now(), name, email, roomId: null });
-      window.HUB.ENGINE.log('REGISTER', 'students', { name: s.name });
-      window.HUB.render();
+
+      // Push to MySQL first to get the real ID
+      const res = await window.HUB.SYNC.push('students', [{ name, email, roomId: null }]);
+
+      if (res && res.success) {
+        // Use database ID
+        const s = students.insert({ id: res.details[0].id, name, email, roomId: null });
+        window.HUB.ENGINE.log('REGISTER', 'students', { name: s.name });
+        window.HUB.render();
+      } else {
+        const errorMsg = res?.error || "Unknown database error";
+        throw new Error(`Registration Sync Failed: ${errorMsg}`);
+      }
     },
 
-    addRoom: (number, type, capacity) => {
+    addRoom: async (number, type, capacity) => {
       if (rooms.findOne({ number })) throw new Error("This room number already exists.");
-      const r = rooms.insert({ id: Date.now(), number, type, capacity: parseInt(capacity) });
-      window.HUB.ENGINE.log('CREATE_ROOM', 'rooms', { number: r.number });
-      window.HUB.render();
+
+      const res = await window.HUB.SYNC.push('rooms', [{ number, type, capacity: parseInt(capacity) }]);
+
+      if (res && res.success) {
+        const r = rooms.insert({ id: res.details[0].id, number, type, capacity: parseInt(capacity) });
+        window.HUB.ENGINE.log('CREATE_ROOM', 'rooms', { number: r.number });
+        window.HUB.render();
+      } else {
+        const errorMsg = res?.error || "Unknown database error";
+        throw new Error(`Database Sync Failed: ${errorMsg}`);
+      }
     },
 
-    allocate: (studentId, roomId) => {
+    allocate: async (studentId, roomId) => {
       const student = students.findOne({ id: studentId });
       if (!student) return;
 
       if (roomId) {
-        const room = rooms.findOne({ id: roomId });
-        const current = students.find({ roomId }).length;
-        if (current >= room.capacity && student.roomId !== roomId) {
-          alert("This room is already at full capacity.");
-          return;
+        const room = rooms.findOne({ id: parseInt(roomId) });
+        if (room) {
+          const current = students.find({ roomId: parseInt(roomId) }).length;
+          if (current >= room.capacity && student.roomId !== parseInt(roomId)) {
+            throw new Error("This room is already at full capacity.");
+          }
         }
       }
 
-      const prevRoomId = student.roomId;
-      student.roomId = roomId;
-      students.update(student);
-      window.HUB.ENGINE.log('ALLOCATE', 'students', { student: student.name, from: prevRoomId, to: roomId });
-      window.HUB.render();
+      // Sync to MySQL First
+      const res = await window.HUB.SYNC.push('students', [{
+        email: student.email,
+        name: student.name,
+        roomId: roomId ? parseInt(roomId) : null
+      }]);
+
+      if (res && res.success) {
+        const prevRoomId = student.roomId;
+        student.roomId = roomId ? parseInt(roomId) : null;
+        students.update(student);
+        window.HUB.ENGINE.log('ALLOCATE', 'students', { student: student.name, from: prevRoomId, to: roomId });
+        window.HUB.render();
+      } else {
+        throw new Error("Allocation Sync Failed");
+      }
     },
 
-    deleteStudent: (id) => {
+    deleteStudent: async (id) => {
       const s = students.findOne({ id });
       if (s && confirm(`Are you sure you want to remove ${s.name}?`)) {
-        attendance.find({ studentId: id }).forEach(r => attendance.remove(r));
-        students.remove(s);
-        window.HUB.ENGINE.log('DELETE', 'students', { name: s.name });
-        window.HUB.render();
+        const res = await window.HUB.SYNC.drop('students', id);
+        if (res && res.success) {
+          attendance.find({ studentId: id }).forEach(r => attendance.remove(r));
+          students.remove(s);
+          window.HUB.ENGINE.log('DELETE', 'students', { name: s.name });
+          window.HUB.render();
+        } else {
+          alert("Delete Failed: Synchronisation error.");
+        }
       }
     },
 
-    deleteRoom: (id) => {
+    deleteRoom: async (id) => {
       const r = rooms.findOne({ id });
       if (r && confirm(`Delete Room ${r.number}?`)) {
-        students.find({ roomId: id }).forEach(s => { s.roomId = null; students.update(s); });
-        rooms.remove(r);
-        window.HUB.ENGINE.log('DROP_ROOM', 'rooms', { number: r.number });
-        window.HUB.render();
+        const res = await window.HUB.SYNC.drop('rooms', id);
+        if (res && res.success) {
+          students.find({ roomId: id }).forEach(s => { s.roomId = null; students.update(s); });
+          rooms.remove(r);
+          window.HUB.ENGINE.log('DROP_ROOM', 'rooms', { number: r.number });
+          window.HUB.render();
+        } else {
+          alert("Delete Failed: Room has residents or sync error.");
+        }
       }
     },
 
-    toggleAttendance: (studentId, isPresent) => {
+    toggleAttendance: async (studentId, isPresent) => {
       if (!attendance) return;
       const date = window.HUB.selectedDate;
-      const existing = attendance.findOne({ studentId, date });
+      const existing = attendance.findOne({ studentId: parseInt(studentId), date });
 
       if (isPresent && !existing) {
-        attendance.insert({ studentId, date });
+        attendance.insert({ studentId: parseInt(studentId), date });
         window.HUB.ENGINE.log('ATTENDANCE', 'presence', { id: studentId, status: 'Present', date });
       } else if (!isPresent && existing) {
         attendance.remove(existing);
         window.HUB.ENGINE.log('ATTENDANCE', 'presence', { id: studentId, status: 'Absent', date });
       }
+
+      // Sync to MySQL
+      const res = await window.HUB.SYNC.push('attendance', [{ studentId: parseInt(studentId), date, is_present: isPresent }]);
+
+      if (!res || !res.success) {
+        console.error("Attendance Sync Failed");
+        // Revert local state if needed, but for now just log
+      }
+
       window.HUB.render();
     },
 
-    addComplaint: (title, message) => {
-      if (!complaints) return;
-      const c = complaints.insert({
-        id: Date.now(),
-        studentId: window.HUB.currentUser.id,
-        studentName: window.HUB.currentUser.name,
+    addComplaint: async (title, message) => {
+      if (!complaints || !window.HUB.currentUser?.id) throw new Error("Authentication required.");
+
+      const res = await window.HUB.SYNC.push('complaints', [{
+        studentId: parseInt(window.HUB.currentUser.id),
         title,
         message,
-        status: 'Pending',
-        timestamp: new Date()
-      });
-      window.HUB.ENGINE.log('COMPLAINT_FILED', 'complaints', { title: c.title, from: c.studentName });
-      window.HUB.render();
+        status: 'Pending'
+      }]);
+
+      if (res && res.success) {
+        const c = complaints.insert({
+          id: res.details[0].id,
+          studentId: parseInt(window.HUB.currentUser.id),
+          studentName: window.HUB.currentUser.name,
+          title,
+          message,
+          status: 'Pending',
+          timestamp: new Date()
+        });
+        window.HUB.ENGINE.log('COMPLAINT_FILED', 'complaints', { title: c.title, from: c.studentName });
+        window.HUB.render();
+      } else {
+        const errorMsg = res?.error || "Database sync failed";
+        throw new Error(`Report Failed: ${errorMsg}`);
+      }
     },
 
-    resolveComplaint: (id) => {
+    resolveComplaint: async (id) => {
       if (!complaints) return;
       const c = complaints.findOne({ id });
       if (c) {
+        const prevStatus = c.status;
         c.status = 'Resolved';
         c.resolvedAt = new Date();
-        complaints.update(c);
-        window.HUB.ENGINE.log('COMPLAINT_RESOLVED', 'complaints', { id });
-        window.HUB.render();
+
+        const res = await window.HUB.SYNC.push('complaints', [c]);
+
+        if (res && res.success) {
+          complaints.update(c);
+          window.HUB.ENGINE.log('COMPLAINT_RESOLVED', 'complaints', { id });
+          window.HUB.render();
+        } else {
+          c.status = prevStatus; // Rollback
+          alert("Status Update Failed");
+        }
       }
     },
 
     // Financial Engine (DML)
-    addPayment: (studentId, amount, method) => {
+    addPayment: async (studentId, amount, method) => {
       if (!payments) return;
       const student = students.findOne({ id: parseInt(studentId) });
-      const p = payments.insert({
-        id: Date.now(),
+
+      const res = await window.HUB.SYNC.push('payments', [{
         studentId: student.id,
-        studentName: student.name,
         amount: parseFloat(amount),
-        method,
-        timestamp: new Date()
-      });
-      window.HUB.ENGINE.log('PAYMENT_RECEIVED', 'payments', { student: student.name, amount });
-      window.HUB.render();
-    },
+        method
+      }]);
 
-    updateFee: (roomType, amount) => {
-      if (!feeStructure) return;
-      let fee = feeStructure.findOne({ type: roomType });
-      if (fee) {
-        fee.amount = parseFloat(amount);
-        feeStructure.update(fee);
-      } else {
-        feeStructure.insert({ type: roomType, amount: parseFloat(amount) });
-      }
-      window.HUB.ENGINE.log('FEE_UPDATED', 'feeStructure', { type: roomType, amount });
-      window.HUB.render();
-    },
-
-    addNotice: (text, priority = 'Normal') => {
-      if (!notices) return;
-      notices.insert({ id: Date.now(), text, priority, timestamp: new Date() });
-      window.HUB.ENGINE.log('POST_NOTICE', 'notices', { text: text.substring(0, 20), priority });
-      window.HUB.render();
-    },
-
-    deleteNotice: (id) => {
-      if (!notices) return;
-      const n = notices.findOne({ id });
-      if (n) {
-        notices.remove(n);
-        window.HUB.ENGINE.log('DELETE_NOTICE', 'notices', { id });
+      if (res && res.success) {
+        const p = payments.insert({
+          id: res.details[0].id,
+          studentId: student.id,
+          studentName: student.name,
+          amount: parseFloat(amount),
+          method,
+          timestamp: new Date()
+        });
+        window.HUB.ENGINE.log('PAYMENT_RECEIVED', 'payments', { student: student.name, amount });
         window.HUB.render();
+      } else {
+        const errorMsg = res?.error || "Database sync failed";
+        throw new Error(`Payment Failed: ${errorMsg}`);
+      }
+    },
+
+    updateFee: async (roomType, amount) => {
+      if (!feeStructure) return;
+
+      const res = await window.HUB.SYNC.push('fees', [{ type: roomType, amount: parseFloat(amount) }]);
+
+      if (res && res.success) {
+        let fee = feeStructure.findOne({ type: roomType });
+        if (fee) {
+          fee.amount = parseFloat(amount);
+          feeStructure.update(fee);
+        } else {
+          feeStructure.insert({ type: roomType, amount: parseFloat(amount) });
+        }
+        window.HUB.ENGINE.log('FEE_UPDATED', 'feeStructure', { type: roomType, amount });
+        window.HUB.render();
+      } else {
+        alert("Fee Update Failed in DB");
+      }
+    },
+
+    addNotice: async (text, priority = 'Normal') => {
+      if (!notices) return;
+
+      const res = await window.HUB.SYNC.push('notices', [{ text, priority }]);
+
+      if (res && res.success) {
+        const n = notices.insert({ id: res.details[0].id, text, priority, timestamp: new Date() });
+        window.HUB.ENGINE.log('POST_NOTICE', 'notices', { text: text.substring(0, 20), priority });
+        window.HUB.render();
+      } else {
+        alert("Board Update Failed");
+      }
+    },
+
+    deleteNotice: async (id) => {
+      if (!notices) return;
+      const n = notices.findOne({ id: parseInt(id) });
+      if (n) {
+        if (confirm("Delete this notice?")) {
+          const res = await window.HUB.SYNC.drop('notices', id);
+          if (res && res.success) {
+            notices.remove(n);
+            window.HUB.ENGINE.log('DELETE_NOTICE', 'notices', { id });
+            window.HUB.render();
+          } else {
+            alert("Delete failed on server.");
+          }
+        }
       }
     }
   },
@@ -275,48 +420,114 @@ function initializeDatabase() {
   payments = db.getCollection('payments') || db.addCollection('payments', { indices: ['studentId'] });
   feeStructure = db.getCollection('feeStructure') || db.addCollection('feeStructure', { unique: ['type'] });
 
-  if (feeStructure.count() === 0) {
-    feeStructure.insert([
-      { type: 'Single-Deluxe', amount: 5000 },
-      { type: 'Double-Standard', amount: 3500 },
-      { type: 'Triple-Budget', amount: 2500 },
-      { type: 'Single-Premium', amount: 4500 }
-    ]);
-  }
-
-  if (rooms.count() === 0) {
-    rooms.insert([
-      { id: 1, number: '101', type: 'Single-Deluxe', capacity: 1 },
-      { id: 2, number: '102', type: 'Double-Standard', capacity: 2 },
-      { id: 3, number: '103', type: 'Double-Standard', capacity: 2 },
-      { id: 4, number: '201', type: 'Triple-Budget', capacity: 3 },
-      { id: 5, number: '202', type: 'Single-Premium', capacity: 1 },
-    ]);
-  }
-
-  if (students.count() === 0) {
-    students.insert([
-      { id: 1, name: 'Alice Johnson', email: 'alice@example.com', roomId: 1 },
-      { id: 2, name: 'Bob Smith', email: 'bob@example.com', roomId: 2 },
-      { id: 3, name: 'Charlie Brown', email: 'charlie@example.com', roomId: 3 },
-    ]);
-  }
-
-  if (notices.count() === 0) {
-    notices.insert([
-      { id: 1, text: '💡 Mess timings updated: Breakfast 8-10 AM, Lunch 12-2 PM.', timestamp: new Date() },
-      { id: 2, text: '🚀 Annual Day celebrations start this Friday!', timestamp: new Date() }
-    ]);
-  }
-
-  if (complaints.count() === 0) {
-    complaints.insert([
-      { id: 1, studentId: 1, studentName: 'Alice Johnson', title: 'Water Leakage', message: 'There is a consistent water leak in the bathroom ceiling.', status: 'Pending', timestamp: new Date() },
-      { id: 2, studentId: 2, studentName: 'Bob Smith', title: 'Broken Fan', message: 'The ceiling fan in my room is making loud noises and rotating slowly.', status: 'Pending', timestamp: new Date() }
-    ]);
-  }
-
   window.HUB.render();
+
+  // --- AUTOMATIC MYSQL SYNCHRONIZATION ---
+
+  const syncEverything = async () => {
+    try {
+      console.log('🔄 Auto-syncing from MySQL...');
+
+      // 1. Sync Rooms FIRST
+      try {
+        const rData = await window.HUB.SYNC.fetch('rooms');
+        if (rData && Array.isArray(rData)) {
+          rooms.clear();
+          rData.forEach(r => rooms.insert({ id: parseInt(r.id), number: r.room_number, type: r.room_type, capacity: parseInt(r.capacity) }));
+        }
+      } catch (e) { console.warn('Room sync fail'); }
+
+      // 2. Sync Students
+      try {
+        const sData = await window.HUB.SYNC.fetch('students');
+        if (sData && Array.isArray(sData)) {
+          students.clear();
+          sData.forEach(s => students.insert({ id: parseInt(s.id), name: s.name, email: s.email, roomId: s.room_id ? parseInt(s.room_id) : null }));
+        }
+      } catch (e) { console.warn('Student sync fail'); }
+
+      // 3. Sync Notices
+      try {
+        const nData = await window.HUB.SYNC.fetch('notices');
+        if (nData && Array.isArray(nData)) {
+          notices.clear();
+          nData.forEach(n => notices.insert({ id: parseInt(n.id), text: n.notice_text, priority: n.priority, timestamp: n.posted_at ? new Date(n.posted_at) : new Date() }));
+        }
+      } catch (e) { console.warn('Notice sync fail'); }
+
+      // 4. Sync Complaints
+      try {
+        const cData = await window.HUB.SYNC.fetch('complaints');
+        if (cData && Array.isArray(cData)) {
+          complaints.clear();
+          cData.forEach(c => complaints.insert({
+            id: parseInt(c.id),
+            studentId: parseInt(c.student_id),
+            studentName: c.student_name || 'Resident',
+            title: c.title,
+            message: c.description,
+            status: c.status,
+            timestamp: c.created_at ? new Date(c.created_at) : new Date()
+          }));
+        }
+      } catch (e) { console.warn('Complaint sync fail'); }
+
+      // 5. Financial Systems
+      try {
+        const pData = await window.HUB.SYNC.fetch('payments');
+        if (pData && Array.isArray(pData)) {
+          payments.clear();
+          pData.forEach(p => payments.insert({
+            id: parseInt(p.id),
+            studentId: parseInt(p.student_id),
+            studentName: p.student_name || 'Resident',
+            amount: parseFloat(p.amount),
+            method: p.payment_method,
+            timestamp: p.payment_date ? new Date(p.payment_date) : new Date()
+          }));
+        }
+      } catch (e) { console.warn('Payment sync fail'); }
+
+      try {
+        const aData = await window.HUB.SYNC.fetch('attendance');
+        if (aData && Array.isArray(aData)) {
+          attendance.clear();
+          aData.forEach(a => attendance.insert({ id: parseInt(a.id), studentId: parseInt(a.student_id), date: a.attendance_date, isPresent: !!a.is_present }));
+        }
+      } catch (e) { console.warn('Attendance sync fail'); }
+
+      try {
+        const fData = await window.HUB.SYNC.fetch('fees');
+        if (fData && Array.isArray(fData)) {
+          feeStructure.clear();
+          fData.forEach(f => feeStructure.insert({ type: f.room_type, amount: parseFloat(f.monthly_fee) }));
+        }
+      } catch (e) { console.warn('Fee sync fail'); }
+
+      const lData = await window.HUB.SYNC.fetch('logs');
+      if (lData && Array.isArray(lData)) {
+        logs.clear();
+        lData.forEach(l => logs.insert({
+          id: parseInt(l.id),
+          action: l.event_action,
+          table: l.target_table,
+          details: typeof l.event_details === 'string' ? JSON.parse(l.event_details) : l.event_details,
+          timestamp: l.event_timestamp
+        }));
+      }
+
+      window.HUB.render();
+      console.log('✅ MySQL Sync Complete.');
+    } catch (err) {
+      console.error('❌ Auto-sync failed:', err);
+    }
+  };
+
+  // Run once on startup
+  syncEverything();
+
+  // Periodic Auto-Sync Every 60 Seconds
+  setInterval(syncEverything, 60000);
 }
 
 // --- VIEW GENERATORS ---
@@ -398,6 +609,13 @@ function Layout(content) {
           </a>
         `).join('')}
       </nav>
+      ${isAdmin ? `
+      <div style="padding: 1rem;">
+        <button class="btn btn-secondary" style="width: 100%; font-size: 0.75rem; border-color: var(--primary);" 
+                onclick="window.HUB.SYNC.push('students', students.data).then(() => alert('✅ Data synced to MySQL!'))">
+          🔄 Sync to MySQL
+        </button>
+      </div>` : ''}
       <div class="user-profile-mini">
         <div class="avatar">${window.HUB.currentUser.name[0]}</div>
         <div class="info">
@@ -423,10 +641,10 @@ function DashboardView() {
   const stats = window.HUB.ANALYTICS.getStats();
 
   if (!isAdmin) {
-    const me = students.findOne({ id: window.HUB.currentUser.id });
-    const myRoom = me ? rooms.findOne({ id: me.roomId }) : null;
-    const roommates = me ? students.find({ roomId: me.roomId }).filter(s => s.id !== me.id) : [];
-    const myPresentToday = !!attendance.findOne({ studentId: window.HUB.currentUser.id, date: window.HUB.selectedDate });
+    const me = students.findOne({ id: parseInt(window.HUB.currentUser.id) });
+    const myRoom = me ? rooms.findOne({ id: parseInt(me.roomId) }) : null;
+    const roommates = me ? students.find({ roomId: parseInt(me.roomId) }).filter(s => s.id !== parseInt(me.id)) : [];
+    const myPresentToday = !!attendance.findOne({ studentId: parseInt(window.HUB.currentUser.id), date: window.HUB.selectedDate });
     const currentNotices = notices ? notices.data : [];
 
     return `
@@ -680,7 +898,7 @@ function AttendanceView() {
         <tbody>
           ${residentList.map(s => {
     const r = rooms.findOne({ id: s.roomId });
-    const isPresent = !!attendance.findOne({ studentId: s.id, date: window.HUB.selectedDate });
+    const isPresent = !!attendance.findOne({ studentId: parseInt(s.id), date: String(window.HUB.selectedDate).trim() });
     return `
               <tr>
                 <td style="font-weight: 600;">${s.name} ${!isAdmin ? '<span class="badge badge-primary" style="margin-left: 10px;">ME</span>' : ''}</td>
@@ -704,7 +922,7 @@ function AttendanceView() {
 
 function ComplaintsView() {
   const isAdmin = window.HUB.userRole === 'admin';
-  const list = isAdmin ? complaints.data : complaints.find({ studentId: window.HUB.currentUser.id });
+  const list = isAdmin ? complaints.data : complaints.find({ studentId: parseInt(window.HUB.currentUser.id) });
 
   return `
     <div class="header animate-fade-in">
@@ -774,9 +992,9 @@ function ModalContainer() {
   if (window.HUB.modal === 'addStudent') {
     body = `
       <h2 style="margin-bottom: 2rem;">Student Registration</h2>
-      <form onsubmit="event.preventDefault(); try { window.HUB.ENGINE.addStudent(this.name.value, this.email.value); window.HUB.modal=null; window.HUB.render(); } catch(e) { alert(e.message); }">
-        <div class="form-group"><label>Full Name</label><input type="text" name="name" required placeholder="Alice Wonderland"></div>
-        <div class="form-group"><label>Email Address</label><input type="email" name="email" required placeholder="alice@domain.com"></div>
+      <form onsubmit="event.preventDefault(); (async () => { try { await window.HUB.ENGINE.addStudent(this.name.value, this.email.value); window.HUB.modal=null; window.HUB.render(); } catch(e) { alert(e.message); } })();">
+        <div class="form-group"><label>Full Name</label><input type="text" name="name" required placeholder="Alice Johnson"></div>
+        <div class="form-group"><label>Email Address</label><input type="email" name="email" required placeholder="alice@example.com"></div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 2rem;">
           <button type="submit" class="btn btn-primary">Save Resident</button>
           <button type="button" class="btn btn-secondary" onclick="window.HUB.modal=null; window.HUB.render()">Cancel</button>
@@ -790,18 +1008,26 @@ function ModalContainer() {
         <h2 style="font-size: 1.75rem; letter-spacing: -0.03em;">New Wing Expansion</h2>
         <p style="color: var(--text-muted); font-size: 0.9rem;">Register a new block or room into the inventory.</p>
       </div>
-      <form onsubmit="event.preventDefault(); try { window.HUB.ENGINE.addRoom(this.num.value, this.type.value, this.cap.value); window.HUB.modal=null; window.HUB.render(); } catch(e) { alert(e.message); }">
+      <form onsubmit="event.preventDefault(); (async () => { try { await window.HUB.ENGINE.addRoom(this.num.value, this.type.value, this.cap.value); window.HUB.modal=null; window.HUB.render(); } catch(e) { alert(e.message); } })();">
         <div class="form-group">
           <label>Unit Identifier (Number)</label>
           <input type="text" name="num" required placeholder="e.g. 501" autofocus>
         </div>
         <div class="form-group">
           <label>Room Category</label>
-          <input type="text" name="type" value="Deluxe Suite">
+          <select name="type" class="search-input" style="padding-left: 1rem; background: white; border: 1px solid var(--border); width: 100%; color: black;">
+            <option style="color: black;">Standard</option>
+            <option style="color: black;">Single-Deluxe</option>
+            <option style="color: black;">Double-Standard</option>
+            <option style="color: black;">Triple-Budget</option>
+            <option style="color: black;">Single-Premium</option>
+            <option style="color: black;">Deluxe Suite</option>
+            <option style="color: black;">Penthouse</option>
+          </select>
         </div>
         <div class="form-group">
           <label>Max Occupancy (Beds)</label>
-          <input type="number" name="cap" value="2" min="1">
+          <input type="number" name="cap" value="2" min="1" max="10">
         </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 2.5rem;">
           <button type="submit" class="btn btn-primary">Authorize Wing</button>
@@ -820,19 +1046,19 @@ function ModalContainer() {
       const isFull = occ >= r.capacity && s.roomId !== r.id;
       return `
             <div class="room-item ${isFull ? 'occupied' : ''} ${s.roomId === r.id ? 'selected' : ''}" 
-                 onclick="${isFull ? '' : `window.HUB.ENGINE.allocate(${s.id}, ${r.id}); window.HUB.modal=null; window.HUB.render();`}">
+                 onclick="${isFull ? '' : `(async()=>{ try{ await window.HUB.ENGINE.allocate(${s.id}, ${r.id}); window.HUB.modal=null; window.HUB.render(); }catch(e){alert(e.message);}})()`}">
               <span style="font-weight: 700; font-size: 1.1rem;">${r.number}</span>
               <span style="font-size: 0.7rem; margin-top: 4px;">${occ}/${r.capacity} Occupied</span>
             </div>
           `;
     }).join('')}
       </div>
-      <button class="btn btn-danger" style="width: 100%; margin-top: 2rem;" onclick="window.HUB.ENGINE.allocate(${s.id}, null); window.HUB.modal=null; window.HUB.render()">Unallocate Resident</button>
+      <button class="btn btn-danger" style="width: 100%; margin-top: 2rem;" onclick="(async()=>{ try{ await window.HUB.ENGINE.allocate(${s.id}, null); window.HUB.modal=null; window.HUB.render(); }catch(e){alert(e.message);}})()">Unallocate Resident</button>
     `;
   } else if (window.HUB.modal === 'addComplaint') {
     body = `
       <h2 style="margin-bottom: 2rem;">Report Issue</h2>
-      <form onsubmit="event.preventDefault(); window.HUB.ENGINE.addComplaint(this.title.value, this.msg.value); window.HUB.modal=null; window.HUB.render();">
+      <form onsubmit="event.preventDefault(); (async () => { try { await window.HUB.ENGINE.addComplaint(this.title.value, this.msg.value); window.HUB.modal=null; window.HUB.render(); } catch(e) { alert(e.message); } })();">
         <div class="form-group"><label>Category / Title</label><input type="text" name="title" required placeholder="e.g. Broken Fan, Water Leakage"></div>
         <div class="form-group"><label>Detailed Message</label><textarea name="msg" class="login-input-field" style="width: 100%; min-height: 120px; padding: 1rem; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 16px; color: white;" placeholder="Describe your issue..."></textarea></div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
@@ -840,6 +1066,75 @@ function ModalContainer() {
           <button type="button" class="btn btn-secondary" onclick="window.HUB.modal=null; window.HUB.render()">Cancel</button>
         </div>
       </form>
+    `;
+  } else if (window.HUB.modal === 'addNotice') {
+    body = `
+      <h2 style="margin-bottom: 2rem;">Post Official Notice</h2>
+      <form onsubmit="event.preventDefault(); (async () => { try { await window.HUB.ENGINE.addNotice(this.msg.value, this.pri.value); window.HUB.modal=null; window.HUB.render(); } catch(e) { alert(e.message); } })();">
+        <div class="form-group">
+          <label>Priority Level</label>
+          <select name="pri" class="search-input" style="padding-left: 1rem; background: white; border: 1px solid var(--border); width: 100%; color: black;">
+            <option style="color: black;">Normal</option>
+            <option style="color: black;">High</option>
+            <option style="color: black;">Urgent</option>
+            <option style="color: black;">Low</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Notice Content</label>
+          <textarea name="msg" required class="login-input-field" style="width: 100%; min-height: 120px; padding: 1rem; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 16px; color: white;" placeholder="Write your announcement here..."></textarea>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 2rem;">
+          <button type="submit" class="btn btn-primary">Post Notice</button>
+          <button type="button" class="btn btn-secondary" onclick="window.HUB.modal=null; window.HUB.render()">Cancel</button>
+        </div>
+      </form>
+    `;
+  } else if (window.HUB.modal === 'recordPayment') {
+    body = `
+      <h2 style="margin-bottom: 2rem;">Record Payment</h2>
+      <form onsubmit="event.preventDefault(); (async () => { try { await window.HUB.ENGINE.addPayment(this.studentId.value, this.amount.value, this.method.value); window.HUB.modal=null; window.HUB.render(); } catch(e) { alert(e.message); } })();">
+        <div class="form-group">
+          <label>Select Resident</label>
+          <select name="studentId" class="search-input" style="padding-left: 1rem; background: white; border: 1px solid var(--border); width: 100%; color: black;">
+            ${students.data.map(s => `<option value="${s.id}" style="color: black;">${s.name}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Amount (₹)</label>
+          <input type="number" name="amount" required placeholder="0.00">
+        </div>
+        <div class="form-group">
+          <label>Method</label>
+          <select name="method" class="search-input" style="padding-left: 1rem; background: white; border: 1px solid var(--border); width: 100%; color: black;">
+            <option style="color: black;">UPI</option>
+            <option style="color: black;">Cash</option>
+            <option style="color: black;">Bank Transfer</option>
+            <option style="color: black;">Card</option>
+          </select>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 2rem;">
+          <button type="submit" class="btn btn-primary">Process</button>
+          <button type="button" class="btn btn-secondary" onclick="window.HUB.modal=null; window.HUB.render()">Cancel</button>
+        </div>
+      </form>
+    `;
+  } else if (window.HUB.modal === 'manageFees') {
+    body = `
+      <h2 style="margin-bottom: 2rem;">Fee Configuration</h2>
+      <div style="display: grid; gap: 1rem;">
+        ${feeStructure.data.map(f => `
+          <div style="display: flex; align-items: center; justify-content: space-between; padding: 1rem; background: rgba(255,255,255,0.03); border-radius: 12px; border: 1px solid var(--border);">
+            <div style="font-weight: 600;">${f.type}</div>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <span style="color: var(--text-muted);">₹</span>
+              <input type="number" value="${f.amount}" style="width: 100px; padding: 0.5rem; border-radius: 8px; background: #000; border: 1px solid var(--border); color: white;" 
+                     onchange="(async () => { try { await window.HUB.ENGINE.updateFee('${f.type}', this.value); } catch(e) { alert(e.message); } })()">
+            </div>
+          </div>
+        `).join('')}
+      </div>
+      <button class="btn btn-secondary" style="width: 100%; margin-top: 2rem;" onclick="window.HUB.modal=null; window.HUB.render()">Close</button>
     `;
   }
 
@@ -1001,97 +1296,5 @@ function PaymentsView() {
     </div>
   `;
 }
-
-// Modify ModalContainer to add financial modals
-const OriginalModalContainer = ModalContainer;
-ModalContainer = () => {
-  if (window.HUB.modal === 'recordPayment') {
-    return `
-      <div class="modal-overlay active" onclick="if(event.target === this) { window.HUB.modal=null; window.HUB.render(); }">
-        <div class="modal">
-          <h2 style="margin-bottom: 2rem;">Record Payment</h2>
-          <form onsubmit="event.preventDefault(); window.HUB.ENGINE.addPayment(this.studentId.value, this.amount.value, this.method.value); window.HUB.modal=null; window.HUB.render();">
-            <div class="form-group">
-              <label>Select Resident</label>
-              <select name="studentId" class="search-input" style="padding-left: 1rem; background: white; border: 1px solid var(--border); width: 100%; color: black;">
-                ${students.data.map(s => `<option value="${s.id}" style="color: black;">${s.name}</option>`).join('')}
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Amount (₹)</label>
-              <input type="number" name="amount" required placeholder="0.00">
-            </div>
-            <div class="form-group">
-              <label>Method</label>
-              <select name="method" class="search-input" style="padding-left: 1rem; background: white; border: 1px solid var(--border); width: 100%; color: black;">
-                <option style="color: black;">UPI</option>
-                <option style="color: black;">Cash</option>
-                <option style="color: black;">Bank Transfer</option>
-                <option style="color: black;">Card</option>
-              </select>
-            </div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 2rem;">
-              <button type="submit" class="btn btn-primary">Process</button>
-              <button type="button" class="btn btn-secondary" onclick="window.HUB.modal=null; window.HUB.render()">Cancel</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    `;
-  }
-
-  if (window.HUB.modal === 'addNotice') {
-    return `
-      <div class="modal-overlay active" onclick="if(event.target === this) { window.HUB.modal=null; window.HUB.render(); }">
-        <div class="modal">
-          <h2 style="margin-bottom: 2rem;">Post New Notice</h2>
-          <form onsubmit="event.preventDefault(); window.HUB.ENGINE.addNotice(this.text.value, this.priority.value); window.HUB.modal=null; window.HUB.render();">
-            <div class="form-group">
-              <label>Notice Content</label>
-              <textarea name="text" required class="search-input" style="width: 100%; min-height: 100px; padding: 1rem; background: var(--glass); border: 1px solid var(--border); border-radius: 12px; color: white;" placeholder="Type your announcement here..."></textarea>
-            </div>
-            <div class="form-group">
-              <label>Priority Level</label>
-              <select name="priority" class="search-input" style="padding-left: 1rem; background: white; border: 1px solid var(--border); width: 100%; color: black;">
-                <option style="color: black;">Normal</option>
-                <option style="color: black;">Low</option>
-                <option style="color: black;">High</option>
-                <option style="color: black;">Urgent</option>
-              </select>
-            </div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 2rem;">
-              <button type="submit" class="btn btn-primary">Post Notice</button>
-              <button type="button" class="btn btn-secondary" onclick="window.HUB.modal=null; window.HUB.render()">Cancel</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    `;
-  }
-
-  if (window.HUB.modal === 'manageFees') {
-    return `
-      <div class="modal-overlay active" onclick="if(event.target === this) { window.HUB.modal=null; window.HUB.render(); }">
-        <div class="modal" style="max-width: 600px;">
-          <h2 style="margin-bottom: 2rem;">Fee Configuration</h2>
-          <div style="display: grid; gap: 1rem;">
-            ${feeStructure.data.map(f => `
-              <div style="display: flex; align-items: center; justify-content: space-between; padding: 1rem; background: var(--glass); border-radius: 12px; border: 1px solid var(--border);">
-                <div style="font-weight: 600;">${f.type}</div>
-                <div style="display: flex; align-items: center; gap: 0.5rem;">
-                  <span style="color: var(--text-muted);">₹</span>
-                  <input type="number" value="${f.amount}" style="width: 100px; padding: 0.5rem; border-radius: 8px; background: var(--bg); border: 1px solid var(--border); color: white;" 
-                         onchange="window.HUB.ENGINE.updateFee('${f.type}', this.value)">
-                </div>
-              </div>
-            `).join('')}
-          </div>
-          <button class="btn btn-secondary" style="width: 100%; margin-top: 2rem;" onclick="window.HUB.modal=null; window.HUB.render()">Close</button>
-        </div>
-      </div>
-    `;
-  }
-  return OriginalModalContainer();
-};
 
 window.addEventListener('DOMContentLoaded', initializeDatabase);
