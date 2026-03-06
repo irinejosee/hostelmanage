@@ -13,7 +13,7 @@ const db = new Loki('hostel.db', {
   autosaveInterval: 4000
 });
 
-let rooms, students, attendance, logs, complaints, notices;
+let rooms, students, attendance, logs, complaints, notices, payments, feeStructure;
 
 // --- GLOBAL STATE & ENGINE ---
 window.HUB = {
@@ -174,6 +174,52 @@ window.HUB = {
         window.HUB.ENGINE.log('COMPLAINT_RESOLVED', 'complaints', { id });
         window.HUB.render();
       }
+    },
+
+    // Financial Engine (DML)
+    addPayment: (studentId, amount, method) => {
+      if (!payments) return;
+      const student = students.findOne({ id: parseInt(studentId) });
+      const p = payments.insert({
+        id: Date.now(),
+        studentId: student.id,
+        studentName: student.name,
+        amount: parseFloat(amount),
+        method,
+        timestamp: new Date()
+      });
+      window.HUB.ENGINE.log('PAYMENT_RECEIVED', 'payments', { student: student.name, amount });
+      window.HUB.render();
+    },
+
+    updateFee: (roomType, amount) => {
+      if (!feeStructure) return;
+      let fee = feeStructure.findOne({ type: roomType });
+      if (fee) {
+        fee.amount = parseFloat(amount);
+        feeStructure.update(fee);
+      } else {
+        feeStructure.insert({ type: roomType, amount: parseFloat(amount) });
+      }
+      window.HUB.ENGINE.log('FEE_UPDATED', 'feeStructure', { type: roomType, amount });
+      window.HUB.render();
+    },
+
+    addNotice: (text, priority = 'Normal') => {
+      if (!notices) return;
+      notices.insert({ id: Date.now(), text, priority, timestamp: new Date() });
+      window.HUB.ENGINE.log('POST_NOTICE', 'notices', { text: text.substring(0, 20), priority });
+      window.HUB.render();
+    },
+
+    deleteNotice: (id) => {
+      if (!notices) return;
+      const n = notices.findOne({ id });
+      if (n) {
+        notices.remove(n);
+        window.HUB.ENGINE.log('DELETE_NOTICE', 'notices', { id });
+        window.HUB.render();
+      }
     }
   },
 
@@ -201,21 +247,20 @@ window.HUB = {
       });
     },
 
-    addNotice: (text) => {
-      if (!notices) return;
-      notices.insert({ id: Date.now(), text, timestamp: new Date() });
-      window.HUB.ENGINE.log('POST_NOTICE', 'notices', { text: text.substring(0, 20) });
-      window.HUB.render();
-    },
-
-    deleteNotice: (id) => {
-      if (!notices) return;
-      const n = notices.findOne({ id });
-      if (n) {
-        notices.remove(n);
-        window.HUB.ENGINE.log('DELETE_NOTICE', 'notices', { id });
-        window.HUB.render();
-      }
+    getFinancialReport: () => {
+      if (!students || !feeStructure || !payments) return [];
+      return students.data.map(s => {
+        const room = rooms.findOne({ id: s.roomId });
+        const fee = room ? (feeStructure.findOne({ type: room.type })?.amount || 0) : 0;
+        const paid = payments.find({ student_id: s.id }).reduce((a, b) => a + b.amount, 0) || payments.find({ studentId: s.id }).reduce((a, b) => a + b.amount, 0); // Handle schema drift if any
+        return {
+          student: s.name,
+          roomId: room ? room.number : 'N/A',
+          totalDue: fee,
+          totalPaid: paid,
+          balance: fee - paid
+        };
+      });
     }
   }
 };
@@ -227,6 +272,17 @@ function initializeDatabase() {
   logs = db.getCollection('logs') || db.addCollection('logs');
   complaints = db.getCollection('complaints') || db.addCollection('complaints', { indices: ['studentId', 'status'] });
   notices = db.getCollection('notices') || db.addCollection('notices');
+  payments = db.getCollection('payments') || db.addCollection('payments', { indices: ['studentId'] });
+  feeStructure = db.getCollection('feeStructure') || db.addCollection('feeStructure', { unique: ['type'] });
+
+  if (feeStructure.count() === 0) {
+    feeStructure.insert([
+      { type: 'Single-Deluxe', amount: 5000 },
+      { type: 'Double-Standard', amount: 3500 },
+      { type: 'Triple-Budget', amount: 2500 },
+      { type: 'Single-Premium', amount: 4500 }
+    ]);
+  }
 
   if (rooms.count() === 0) {
     rooms.insert([
@@ -250,6 +306,13 @@ function initializeDatabase() {
     notices.insert([
       { id: 1, text: '💡 Mess timings updated: Breakfast 8-10 AM, Lunch 12-2 PM.', timestamp: new Date() },
       { id: 2, text: '🚀 Annual Day celebrations start this Friday!', timestamp: new Date() }
+    ]);
+  }
+
+  if (complaints.count() === 0) {
+    complaints.insert([
+      { id: 1, studentId: 1, studentName: 'Alice Johnson', title: 'Water Leakage', message: 'There is a consistent water leak in the bathroom ceiling.', status: 'Pending', timestamp: new Date() },
+      { id: 2, studentId: 2, studentName: 'Bob Smith', title: 'Broken Fan', message: 'The ceiling fan in my room is making loud noises and rotating slowly.', status: 'Pending', timestamp: new Date() }
     ]);
   }
 
@@ -311,6 +374,7 @@ function Layout(content) {
       { id: 'students', icon: '👤', label: 'Residents' },
     ] : []),
     { id: 'attendance', icon: '📅', label: isAdmin ? 'Daily Log' : 'My Attendance' },
+    { id: 'payments', icon: '💰', label: isAdmin ? 'Finances' : 'My Dues' },
     { id: 'complaints', icon: '💌', label: 'Issue Log' },
     ...(isAdmin ? [{ id: 'audit', icon: '📜', label: 'System Logs' }] : []),
   ];
@@ -455,7 +519,7 @@ function DashboardView() {
       <div class="table-wrapper">
         <div style="padding: 1.5rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
           <h3 style="font-weight: 600;">Bulletin Board</h3>
-          <button class="btn btn-primary btn-sm" onclick="const t = prompt('New Notice:'); if(t) window.HUB.ENGINE.addNotice(t)">+ Post</button>
+          <button class="btn btn-primary btn-sm" onclick="window.HUB.modal='addNotice'; window.HUB.render()">+ Post</button>
         </div>
         <div style="padding: 1rem; max-height: 300px; overflow-y: auto;">
           ${currentNotices.slice().reverse().map(n => `
@@ -797,6 +861,7 @@ window.HUB.render = () => {
     case 'rooms': content = RoomsView(); break;
     case 'students': content = StudentsView(); break;
     case 'attendance': content = AttendanceView(); break;
+    case 'payments': content = PaymentsView(); break;
     case 'complaints': content = ComplaintsView(); break;
     case 'audit': content = AuditLogsView(); break;
   }
@@ -835,4 +900,198 @@ window.HUB.moveDate = (days) => {
 };
 
 // Init
+function PaymentsView() {
+  const isAdmin = window.HUB.userRole === 'admin';
+  const report = window.HUB.ANALYTICS.getFinancialReport();
+  const myRecord = report.find(r => r.student === window.HUB.currentUser.name);
+  const history = isAdmin ? payments.data : payments.find({ studentId: window.HUB.currentUser.id });
+
+  if (!isAdmin) {
+    return `
+      <div class="header animate-fade-in">
+        <h1>Financial Status</h1>
+        <div class="badge ${myRecord?.balance > 0 ? 'badge-danger' : 'badge-success'}">
+          ${myRecord?.balance > 0 ? 'PENDING DUES' : 'FULLY PAID'}
+        </div>
+      </div>
+      <div class="dashboard-grid animate-fade-in">
+        <div class="stat-card">
+          <span class="label">Total Fee</span>
+          <span class="value">₹${myRecord?.totalDue || 0}</span>
+        </div>
+        <div class="stat-card">
+          <span class="label">Amount Paid</span>
+          <span class="value" style="color: var(--success)">₹${myRecord?.totalPaid || 0}</span>
+        </div>
+        <div class="stat-card">
+          <span class="label">Current Balance</span>
+          <span class="value" style="color: ${myRecord?.balance > 0 ? 'var(--danger)' : 'var(--success)'}">₹${myRecord?.balance || 0}</span>
+        </div>
+      </div>
+      <div class="table-wrapper animate-fade-in">
+        <h3 style="padding: 1.5rem; border-bottom: 1px solid var(--border);">Transaction History</h3>
+        <table>
+          <thead><tr><th>Date</th><th>Amount</th><th>Method</th></tr></thead>
+          <tbody>
+            ${history.slice().reverse().map(p => `
+              <tr>
+                <td>${new Date(p.timestamp).toLocaleDateString()}</td>
+                <td style="font-weight: 700; color: var(--success)">+ ₹${p.amount}</td>
+                <td><span class="badge badge-primary">${p.method}</span></td>
+              </tr>
+            `).join('') || '<tr><td colspan="3" style="text-align: center; color: var(--text-muted); padding: 2rem;">No transactions yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="header animate-fade-in">
+      <div>
+        <h1>Fee Management</h1>
+        <p style="color: var(--text-muted);">Monitor balances and record resident payments.</p>
+      </div>
+      <div style="display: flex; gap: 1rem;">
+        <button class="btn btn-secondary" onclick="window.HUB.modal='manageFees'; window.HUB.render()">⚙️ Rates</button>
+        <button class="btn btn-primary" onclick="window.HUB.modal='recordPayment'; window.HUB.render()">+ Record Payment</button>
+      </div>
+    </div>
+
+    <div class="table-wrapper animate-fade-in">
+      <table>
+        <thead>
+          <tr><th>Resident</th><th>Room</th><th>Total Fee</th><th>Paid</th><th>Balance</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          ${report.map(r => `
+            <tr>
+              <td><span style="font-weight: 600;">${r.student}</span></td>
+              <td>Room ${r.roomId}</td>
+              <td>₹${r.totalDue}</td>
+              <td style="color: var(--success); font-weight: 600;">₹${r.totalPaid}</td>
+              <td style="color: ${r.balance > 0 ? 'var(--danger)' : 'var(--text)'}; font-weight: 700;">₹${r.balance}</td>
+              <td>
+                <span class="badge ${r.balance <= 0 ? 'badge-success' : 'badge-danger'}">
+                  ${r.balance <= 0 ? 'CLEAR' : 'DEFAULTER'}
+                </span>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="table-wrapper animate-fade-in" style="margin-top: 2rem;">
+      <h3 style="padding: 1.5rem; border-bottom: 1px solid var(--border);">Recent Transactions</h3>
+      <div style="max-height: 300px; overflow-y: auto;">
+      ${history.slice().reverse().map(p => `
+        <div style="padding: 1rem; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border);">
+          <div>
+            <div style="font-weight: 600;">${p.studentName}</div>
+            <div style="font-size: 0.75rem; color: var(--text-muted);">${new Date(p.timestamp).toLocaleString()}</div>
+          </div>
+          <div style="text-align: right;">
+            <div style="color: var(--success); font-weight: 700;">₹${p.amount}</div>
+            <div class="badge badge-primary" style="font-size: 0.6rem;">${p.method}</div>
+          </div>
+        </div>
+      `).join('') || '<div style="padding: 2rem; color: var(--text-muted); text-align: center;">No payments recorded.</div>'}
+      </div>
+    </div>
+  `;
+}
+
+// Modify ModalContainer to add financial modals
+const OriginalModalContainer = ModalContainer;
+ModalContainer = () => {
+  if (window.HUB.modal === 'recordPayment') {
+    return `
+      <div class="modal-overlay active" onclick="if(event.target === this) { window.HUB.modal=null; window.HUB.render(); }">
+        <div class="modal">
+          <h2 style="margin-bottom: 2rem;">Record Payment</h2>
+          <form onsubmit="event.preventDefault(); window.HUB.ENGINE.addPayment(this.studentId.value, this.amount.value, this.method.value); window.HUB.modal=null; window.HUB.render();">
+            <div class="form-group">
+              <label>Select Resident</label>
+              <select name="studentId" class="search-input" style="padding-left: 1rem; background: white; border: 1px solid var(--border); width: 100%; color: black;">
+                ${students.data.map(s => `<option value="${s.id}" style="color: black;">${s.name}</option>`).join('')}
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Amount (₹)</label>
+              <input type="number" name="amount" required placeholder="0.00">
+            </div>
+            <div class="form-group">
+              <label>Method</label>
+              <select name="method" class="search-input" style="padding-left: 1rem; background: white; border: 1px solid var(--border); width: 100%; color: black;">
+                <option style="color: black;">UPI</option>
+                <option style="color: black;">Cash</option>
+                <option style="color: black;">Bank Transfer</option>
+                <option style="color: black;">Card</option>
+              </select>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 2rem;">
+              <button type="submit" class="btn btn-primary">Process</button>
+              <button type="button" class="btn btn-secondary" onclick="window.HUB.modal=null; window.HUB.render()">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  if (window.HUB.modal === 'addNotice') {
+    return `
+      <div class="modal-overlay active" onclick="if(event.target === this) { window.HUB.modal=null; window.HUB.render(); }">
+        <div class="modal">
+          <h2 style="margin-bottom: 2rem;">Post New Notice</h2>
+          <form onsubmit="event.preventDefault(); window.HUB.ENGINE.addNotice(this.text.value, this.priority.value); window.HUB.modal=null; window.HUB.render();">
+            <div class="form-group">
+              <label>Notice Content</label>
+              <textarea name="text" required class="search-input" style="width: 100%; min-height: 100px; padding: 1rem; background: var(--glass); border: 1px solid var(--border); border-radius: 12px; color: white;" placeholder="Type your announcement here..."></textarea>
+            </div>
+            <div class="form-group">
+              <label>Priority Level</label>
+              <select name="priority" class="search-input" style="padding-left: 1rem; background: white; border: 1px solid var(--border); width: 100%; color: black;">
+                <option style="color: black;">Normal</option>
+                <option style="color: black;">Low</option>
+                <option style="color: black;">High</option>
+                <option style="color: black;">Urgent</option>
+              </select>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 2rem;">
+              <button type="submit" class="btn btn-primary">Post Notice</button>
+              <button type="button" class="btn btn-secondary" onclick="window.HUB.modal=null; window.HUB.render()">Cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  if (window.HUB.modal === 'manageFees') {
+    return `
+      <div class="modal-overlay active" onclick="if(event.target === this) { window.HUB.modal=null; window.HUB.render(); }">
+        <div class="modal" style="max-width: 600px;">
+          <h2 style="margin-bottom: 2rem;">Fee Configuration</h2>
+          <div style="display: grid; gap: 1rem;">
+            ${feeStructure.data.map(f => `
+              <div style="display: flex; align-items: center; justify-content: space-between; padding: 1rem; background: var(--glass); border-radius: 12px; border: 1px solid var(--border);">
+                <div style="font-weight: 600;">${f.type}</div>
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                  <span style="color: var(--text-muted);">₹</span>
+                  <input type="number" value="${f.amount}" style="width: 100px; padding: 0.5rem; border-radius: 8px; background: var(--bg); border: 1px solid var(--border); color: white;" 
+                         onchange="window.HUB.ENGINE.updateFee('${f.type}', this.value)">
+                </div>
+              </div>
+            `).join('')}
+          </div>
+          <button class="btn btn-secondary" style="width: 100%; margin-top: 2rem;" onclick="window.HUB.modal=null; window.HUB.render()">Close</button>
+        </div>
+      </div>
+    `;
+  }
+  return OriginalModalContainer();
+};
+
 window.addEventListener('DOMContentLoaded', initializeDatabase);
