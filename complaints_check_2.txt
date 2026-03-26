@@ -1,2 +1,0 @@
-﻿id	student_id	title	description	status	created_at	resolved_at
-1	1	Test Issue	Testing complaints sync	Pending	2026-03-06 22:26:28	NULL

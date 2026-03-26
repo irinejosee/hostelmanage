@@ -121,15 +121,15 @@ window.HUB = {
       }
     },
 
-    addStudent: async (name, email) => {
+    addStudent: async (name, email, phone) => {
       if (students.findOne({ email })) throw new Error("A student with this email is already registered.");
 
       // Push to MySQL first to get the real ID
-      const res = await window.HUB.SYNC.push('students', [{ name, email, roomId: null }]);
+      const res = await window.HUB.SYNC.push('students', [{ name, email, phone, roomId: null }]);
 
       if (res && res.success) {
         // Use database ID
-        const s = students.insert({ id: res.details[0].id, name, email, roomId: null });
+        const s = students.insert({ id: res.details[0].id, name, email, phone, roomId: null });
         window.HUB.ENGINE.log('REGISTER', 'students', { name: s.name });
         window.HUB.render();
       } else {
@@ -397,7 +397,7 @@ window.HUB = {
       return students.data.map(s => {
         const room = rooms.findOne({ id: s.roomId });
         const fee = room ? (feeStructure.findOne({ type: room.type })?.amount || 0) : 0;
-        const paid = payments.find({ student_id: s.id }).reduce((a, b) => a + b.amount, 0) || payments.find({ studentId: s.id }).reduce((a, b) => a + b.amount, 0); // Handle schema drift if any
+        const paid = payments.find({ studentId: s.id }).reduce((a, b) => a + b.amount, 0);
         return {
           student: s.name,
           roomId: room ? room.number : 'N/A',
@@ -442,7 +442,7 @@ function initializeDatabase() {
         const sData = await window.HUB.SYNC.fetch('students');
         if (sData && Array.isArray(sData)) {
           students.clear();
-          sData.forEach(s => students.insert({ id: parseInt(s.id), name: s.name, email: s.email, roomId: s.room_id ? parseInt(s.room_id) : null }));
+          sData.forEach(s => students.insert({ id: parseInt(s.id), name: s.name, email: s.email, phone: s.phone, roomId: s.room_id ? parseInt(s.room_id) : null }));
         }
       } catch (e) { console.warn('Student sync fail'); }
 
@@ -533,43 +533,32 @@ function initializeDatabase() {
 // --- VIEW GENERATORS ---
 
 function LoginView() {
-  const bubbles = Array.from({ length: 15 }).map((_, i) => {
-    const size = Math.random() * 60 + 20;
-    const left = Math.random() * 100;
-    const duration = Math.random() * 10 + 5;
-    const delay = Math.random() * 5;
-    return `<div class="bubble" style="width:${size}px; height:${size}px; left:${left}%; --duration:${duration}s; animation-delay:${delay}s"></div>`;
-  }).join('');
-
   return `
-    <div class="login-bg" style="background-image: url('C:/Users/DELL/.gemini/antigravity/brain/ca2e4324-d7c2-41f4-bae2-efbc5f80dc8a/hostel_hub_login_bg_1771954266905.png')"></div>
-    <div class="bubbles-container">${bubbles}</div>
-    <div class="floating-blobs">
-      <div class="blob blob-1"></div>
-      <div class="blob blob-2"></div>
-    </div>
+    <div id="water-bg" class="login-bg" style="background-image: url('https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?q=80&w=2600&auto=format&fit=crop')"></div>
     <div class="login-screen">
-      <div class="login-card">
-        <div class="login-header">
-          <div class="login-logo stagger">H</div>
-          <h1 class="login-title stagger delay-1">Hostel Hub</h1>
-          <p class="login-tagline stagger delay-2">Experience the future of resident management</p>
-        </div>
-        <form class="login-form" onsubmit="event.preventDefault(); window.HUB.login(this.username.value, this.password.value)">
-          <div class="login-input-group stagger delay-3">
-            <label>Master Identity / Resident Email</label>
-            <input type="text" name="username" class="login-input-field" placeholder="admin or user" required autocomplete="off">
+      <div class="login-glass-panel">
+        <div class="login-content">
+          <div class="login-badge animate-fade-in delay-1">ELITE ACCESS</div>
+          <h1 class="login-huge-title animate-fade-in delay-2">Hostel<br>Hub<span class="dot">.</span></h1>
+          <p class="login-subtitle animate-fade-in delay-3">The premium resident management portal. Experience absolute clarity and fluid control.</p>
+          
+          <form class="login-form animate-fade-in delay-4" onsubmit="event.preventDefault(); window.HUB.login(this.username.value, this.password.value)">
+            <div class="input-wrapper">
+              <span class="input-icon">👤</span>
+              <input type="text" name="username" class="premium-input" placeholder="Identity (e.g. admin)" required autocomplete="off">
+            </div>
+            <div class="input-wrapper">
+              <span class="input-icon">🔑</span>
+              <input type="password" name="password" class="premium-input" placeholder="Security Key" required>
+            </div>
+            <button type="submit" class="premium-btn">
+              <span>Initiate Protocol</span>
+              <span class="btn-arrow">→</span>
+            </button>
+          </form>
+          <div class="login-footer animate-fade-in delay-5">
+             Secure Gateway &nbsp;&bull;&nbsp; <span>admin / admin</span> or <span>user / user</span>
           </div>
-          <div class="login-input-group stagger delay-4">
-            <label>Security Key</label>
-            <input type="password" name="password" class="login-input-field" placeholder="••••••••" required>
-          </div>
-          <button type="submit" class="btn btn-primary login-btn stagger delay-5">
-            <span>Unlock Access</span>
-          </button>
-        </form>
-        <div class="login-footer stagger delay-5">
-          <p>Demo: admin/admin | user/user</p>
         </div>
       </div>
     </div>
@@ -856,7 +845,10 @@ function StudentsView() {
     return `
               <tr>
                 <td><span style="font-weight: 600;">${s.name}</span></td>
-                <td>${s.email}</td>
+                <td>
+                  <div style="font-size: 0.9rem;">${s.email}</div>
+                  ${s.phone ? `<div style="font-size: 0.8rem; color: var(--text-muted);">📞 ${s.phone}</div>` : ''}
+                </td>
                 <td>${r ? `<span class="badge badge-primary">Room ${r.number}</span>` : '<span style="color: var(--danger); font-size: 0.8rem; font-weight: 600;">UNASSIGNED</span>'}</td>
                 <td style="display: flex; gap: 0.5rem;">
                   <button class="btn btn-secondary btn-sm" onclick="window.HUB.selectedId=${s.id}; window.HUB.modal='allocate'; window.HUB.render()">Allocate</button>
@@ -992,9 +984,10 @@ function ModalContainer() {
   if (window.HUB.modal === 'addStudent') {
     body = `
       <h2 style="margin-bottom: 2rem;">Student Registration</h2>
-      <form onsubmit="event.preventDefault(); (async () => { try { await window.HUB.ENGINE.addStudent(this.name.value, this.email.value); window.HUB.modal=null; window.HUB.render(); } catch(e) { alert(e.message); } })();">
+      <form onsubmit="event.preventDefault(); (async () => { try { await window.HUB.ENGINE.addStudent(this.name.value, this.email.value, this.phone.value); window.HUB.modal=null; window.HUB.render(); } catch(e) { alert(e.message); } })();">
         <div class="form-group"><label>Full Name</label><input type="text" name="name" required placeholder="Alice Johnson"></div>
-        <div class="form-group"><label>Email Address</label><input type="email" name="email" required placeholder="alice@example.com"></div>
+        <div class="form-group"><label>Email Address</label><input type="email" name="email" required pattern="[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}$" placeholder="alice@example.com"></div>
+        <div class="form-group"><label>Phone Number</label><input type="tel" name="phone" required pattern="[0-9]{10}" maxlength="10" placeholder="1234567890"></div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 2rem;">
           <button type="submit" class="btn btn-primary">Save Resident</button>
           <button type="button" class="btn btn-secondary" onclick="window.HUB.modal=null; window.HUB.render()">Cancel</button>
@@ -1147,7 +1140,22 @@ window.HUB.render = () => {
 
   if (!window.HUB.isLoggedIn) {
     app.innerHTML = LoginView();
+    // Initialize Water Ripple Effect if available
+    setTimeout(() => {
+      if (window.$ && $('#water-bg').length) {
+        try {
+          if (!$('#water-bg').data('ripples')) {
+            $('#water-bg').ripples({ resolution: 512, dropRadius: 25, perturbance: 0.05 });
+          }
+        } catch (e) { console.error('Ripples effect error', e); }
+      }
+    }, 100);
     return;
+  } else {
+    // Destroy ripples if logged in
+    if (window.$ && $('#water-bg').length) {
+      try { $('#water-bg').ripples('destroy'); } catch (e) { }
+    }
   }
 
   let content = '';

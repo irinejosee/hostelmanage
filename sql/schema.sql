@@ -1,15 +1,4 @@
--- ==========================================================
--- HOSTEL HUB - ADVANCED DBMS SCHEMA WITH CONSTRAINTS
--- Dialect: MySQL
--- ==========================================================
-
--- NOTE: MySQL does not have DOMAINS or EXTENSIONS like PostgreSQL.
--- We use standard types and constraints.
-
--- 1. DDL: DATABASE STRUCTURE
--- Using NAMED CONSTRAINTS where possible for professional error reporting
-
--- Cleanup
+ 
 SET FOREIGN_KEY_CHECKS = 0;
 DROP TABLE IF EXISTS payments;
 DROP TABLE IF EXISTS fee_structure;
@@ -35,7 +24,7 @@ CREATE TABLE rooms (
     -- NAMED CONSTRAINTS
     CONSTRAINT uk_room_number UNIQUE(room_number),
     CONSTRAINT chk_positive_capacity CHECK (capacity > 0 AND capacity <= 10), -- Business Rule: Max 10 per room
-    CONSTRAINT chk_room_type CHECK (room_type IN ('Single-Deluxe', 'Double-Standard', 'Triple-Budget', 'Single-Premium', 'Standard'))
+    CONSTRAINT chk_room_type CHECK (room_type IN ('Single-Deluxe', 'Double-Standard', 'Triple-Budget', 'Single-Premium', 'Standard', 'Deluxe Suite', 'Penthouse'))
 ) ENGINE=InnoDB;
 
 -- Students (Residents) Table
@@ -43,6 +32,7 @@ CREATE TABLE students (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     email VARCHAR(255) NOT NULL, -- MySQL uses VARCHAR instead of custom domain
+    phone VARCHAR(15),           -- Resident phone number 
     room_id INT,
     registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     

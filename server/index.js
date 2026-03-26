@@ -47,12 +47,13 @@ app.post('/api/students', async (req, res) => {
         const details = [];
         for (const s of data) {
             const roomId = s.room_id || s.roomId || null;
+            const phone = s.phone || null;
             const [existing] = await db.query('SELECT id FROM students WHERE email = ?', [s.email]);
             if (existing.length > 0) {
-                await db.query('UPDATE students SET name = ?, room_id = ? WHERE email = ?', [s.name, roomId, s.email]);
+                await db.query('UPDATE students SET name = ?, phone = ?, room_id = ? WHERE email = ?', [s.name, phone, roomId, s.email]);
                 details.push({ email: s.email, id: existing[0].id });
             } else {
-                const [result] = await db.query('INSERT INTO students (name, email, room_id) VALUES (?, ?, ?)', [s.name, s.email, roomId]);
+                const [result] = await db.query('INSERT INTO students (name, email, phone, room_id) VALUES (?, ?, ?, ?)', [s.name, s.email, phone, roomId]);
                 details.push({ email: s.email, id: result.insertId });
             }
         }

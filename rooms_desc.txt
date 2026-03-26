@@ -1,6 +1,0 @@
-﻿Field	Type	Null	Key	Default	Extra
-id	int	NO	PRI	NULL	auto_increment
-room_number	varchar(10)	NO	UNI	NULL	
-room_type	varchar(50)	YES		Standard	
-capacity	int	NO		NULL	
-created_at	timestamp	YES		CURRENT_TIMESTAMP	DEFAULT_GENERATED

@@ -1,4 +1,0 @@
-﻿id	room_number	room_type	capacity	created_at
-1	101	Single-Deluxe	1	2026-03-06 19:14:51
-2	102	Double-Standard	2	2026-03-06 19:14:51
-3	201	Triple-Budget	3	2026-03-06 19:14:51

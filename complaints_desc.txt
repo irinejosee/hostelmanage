@@ -1,8 +1,0 @@
-﻿Field	Type	Null	Key	Default	Extra
-id	int	NO	PRI	NULL	auto_increment
-student_id	int	NO	MUL	NULL	
-title	varchar(200)	NO		NULL	
-description	text	NO		NULL	
-status	varchar(20)	YES		Pending	
-created_at	timestamp	YES		CURRENT_TIMESTAMP	DEFAULT_GENERATED
-resolved_at	timestamp	YES		NULL	
