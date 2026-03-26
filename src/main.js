@@ -640,7 +640,7 @@ function DashboardView() {
       <div class="header animate-fade-in">
         <div>
           <h1>Welcome, ${me.name.split(' ')[0]}!</h1>
-          <p style="color: var(--text-muted);">Stay updated with your hostel residency status.</p>
+          <p>Stay updated with your hostel residency status.</p>
         </div>
       </div>
 
@@ -697,10 +697,10 @@ function DashboardView() {
   return `
     <div class="header animate-fade-in">
       <div>
-        <h1>Dashboard</h1>
-        <p style="color: var(--text-muted);">Welcome back Master Admin! System status is nominal.</p>
+        <h1>Dashboard Matrix</h1>
+        <p>Welcome back, System Administrator. All services online and operational.</p>
       </div>
-      <div class="badge badge-primary">Master Access</div>
+      <div class="badge badge-primary">MASTER ACCESS</div>
     </div>
 
     <div class="dashboard-grid animate-fade-in" style="animation-delay: 0.1s;">
